@@ -1,0 +1,351 @@
+name: Build Custom Android APK (aarch64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      custom_package_name:
+        description: '自定义包名 (例如: com.example.remote_desktop)'
+        required: false
+        default: 'com.remote.desktop.app'
+      custom_app_name:
+        description: '自定义应用名称 (例如: RemoteDesktop)'
+        required: false
+        default: 'RemoteDesktop'
+      upload_artifact:
+        description: '上传构建产物'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+#  push:
+#    branches:
+#      - master
+#    paths:
+#      - '.github/workflows/build-android-custom.yml'
+#      - 'flutter/android/**'
+#      - 'flutter/build_android.sh'
+
+env:
+  # 默认值，如果 workflow_dispatch 没有提供则使用这些
+  CUSTOM_PACKAGE_NAME: ${{ github.event.inputs.custom_package_name }}
+  CUSTOM_APP_NAME: ${{ github.event.inputs.custom_app_name }}
+  UPLOAD_ARTIFACT: ${{ github.event.inputs.upload_artifact }}
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-custom-android-aarch64:
+    needs: [ generate-bridge ]
+    name: Build Custom Android APK (aarch64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+               clang \
+               cmake \
+               curl \
+               gcc-multilib \
+               git \
+               g++ \
+               g++-multilib \
+               libayatana-appindicator3-dev \
+               libasound2-dev \
+               libc6-dev \
+               libclang-dev \
+               libunwind-dev \
+               libgstreamer1.0-dev \
+               libgstreamer-plugins-base1.0-dev \
+               libgtk-3-dev \
+               libpam0g-dev \
+               libpulse-dev \
+               libva-dev \
+               libxcb-randr0-dev \
+               libxcb-shape0-dev \
+               libxcb-xfixes0-dev \
+               libxdo-dev \
+               libxfixes-dev \
+               llvm-dev \
+               nasm \
+               ninja-build \
+               openjdk-17-jdk-headless \
+               pkg-config \
+               tree \
+               wget
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Extract environment variables from flutter-build.yml
+        id: extract-env
+        run: |
+          # 从 flutter-build.yml 中提取环境变量
+          FLUTTER_BUILD_FILE=".github/workflows/flutter-build.yml"
+          
+          # 提取函数：支持带引号和不带引号的值
+          extract_var() {
+            local var_name=$1
+            local line=$(grep -E "^\s*${var_name}:" "$FLUTTER_BUILD_FILE" | head -1)
+            if [ -n "$line" ]; then
+              # 尝试提取带引号的值
+              local value=$(echo "$line" | sed -n 's/.*:\s*"\([^"]*\)".*/\1/p')
+              # 如果没有引号，尝试提取不带引号的值
+              if [ -z "$value" ]; then
+                value=$(echo "$line" | sed -n 's/.*:\s*\([^#]*\).*/\1/p' | xargs)
+              fi
+              echo "$value"
+            fi
+          }
+          
+          # 提取各个环境变量的值
+          SCITER_RUST_VERSION=$(extract_var "SCITER_RUST_VERSION")
+          RUST_VERSION=$(extract_var "RUST_VERSION")
+          CARGO_NDK_VERSION=$(extract_var "CARGO_NDK_VERSION")
+          ANDROID_FLUTTER_VERSION=$(extract_var "ANDROID_FLUTTER_VERSION")
+          VCPKG_COMMIT_ID=$(extract_var "VCPKG_COMMIT_ID")
+          VERSION=$(extract_var "VERSION")
+          NDK_VERSION=$(extract_var "NDK_VERSION")
+          
+          # 验证是否成功提取所有必需的环境变量
+          MISSING_VARS=""
+          [ -z "$SCITER_RUST_VERSION" ] && MISSING_VARS="$MISSING_VARS SCITER_RUST_VERSION"
+          [ -z "$RUST_VERSION" ] && MISSING_VARS="$MISSING_VARS RUST_VERSION"
+          [ -z "$CARGO_NDK_VERSION" ] && MISSING_VARS="$MISSING_VARS CARGO_NDK_VERSION"
+          [ -z "$ANDROID_FLUTTER_VERSION" ] && MISSING_VARS="$MISSING_VARS ANDROID_FLUTTER_VERSION"
+          [ -z "$VCPKG_COMMIT_ID" ] && MISSING_VARS="$MISSING_VARS VCPKG_COMMIT_ID"
+          [ -z "$VERSION" ] && MISSING_VARS="$MISSING_VARS VERSION"
+          [ -z "$NDK_VERSION" ] && MISSING_VARS="$MISSING_VARS NDK_VERSION"
+          
+          if [ -n "$MISSING_VARS" ]; then
+            echo "错误: 无法从 flutter-build.yml 中提取以下环境变量:$MISSING_VARS"
+            echo "请检查 .github/workflows/flutter-build.yml 文件是否存在且包含所需的环境变量"
+            exit 1
+          fi
+          
+          # 输出到 GitHub Actions 环境变量
+          echo "SCITER_RUST_VERSION=$SCITER_RUST_VERSION" >> $GITHUB_ENV
+          echo "RUST_VERSION=$RUST_VERSION" >> $GITHUB_ENV
+          echo "CARGO_NDK_VERSION=$CARGO_NDK_VERSION" >> $GITHUB_ENV
+          echo "ANDROID_FLUTTER_VERSION=$ANDROID_FLUTTER_VERSION" >> $GITHUB_ENV
+          echo "VCPKG_COMMIT_ID=$VCPKG_COMMIT_ID" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "NDK_VERSION=$NDK_VERSION" >> $GITHUB_ENV
+          
+          echo "✓ 成功从 flutter-build.yml 提取环境变量:"
+          echo "  SCITER_RUST_VERSION=$SCITER_RUST_VERSION"
+          echo "  RUST_VERSION=$RUST_VERSION"
+          echo "  CARGO_NDK_VERSION=$CARGO_NDK_VERSION"
+          echo "  ANDROID_FLUTTER_VERSION=$ANDROID_FLUTTER_VERSION"
+          echo "  VCPKG_COMMIT_ID=$VCPKG_COMMIT_ID"
+          echo "  VERSION=$VERSION"
+          echo "  NDK_VERSION=$NDK_VERSION"
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          cd $(dirname $(dirname $(which flutter)))
+          # 这个 patch 是针对特定 Flutter 版本的，保持与原版一致
+          [[ "${{ env.ANDROID_FLUTTER_VERSION }}" == "3.24.5" ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff || true
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        run: |
+          ANDROID_TARGET=arm64-v8a
+          if ! ./flutter/build_android_deps.sh "${ANDROID_TARGET}"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+        shell: bash
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: rustdesk-lib-cache-android
+          key: aarch64-linux-android
+
+      - name: Build rustdesk lib
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          ./flutter/ndk_arm64.sh
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+
+      - name: Modify app identifiers
+        run: |
+          OLD_PACKAGE="com.carriez.flutter_hbb"
+          NEW_PACKAGE="${{ env.CUSTOM_PACKAGE_NAME }}"
+          NEW_APP_NAME="${{ env.CUSTOM_APP_NAME }}"
+          
+          # 如果输入为空，使用默认值
+          if [ -z "$NEW_PACKAGE" ]; then
+            NEW_PACKAGE="com.remote.desktop.app"
+          fi
+          if [ -z "$NEW_APP_NAME" ]; then
+            NEW_APP_NAME="RemoteDesktop"
+          fi
+          
+          OLD_APP_NAME="RustDesk"
+          
+          echo "修改包名: $OLD_PACKAGE -> $NEW_PACKAGE"
+          echo "修改应用名称: $OLD_APP_NAME -> $NEW_APP_NAME"
+          
+          # 1. 修改 build.gradle 中的 applicationId
+          sed -i "s/applicationId \"$OLD_PACKAGE\"/applicationId \"$NEW_PACKAGE\"/g" ./flutter/android/app/build.gradle
+          
+          # 2. 修改所有 AndroidManifest.xml 中的 package
+          find ./flutter/android -name "AndroidManifest.xml" -type f -exec sed -i "s/package=\"$OLD_PACKAGE\"/package=\"$NEW_PACKAGE\"/g" {} \;
+          
+          # 3. 修改 AndroidManifest.xml 中的 intent action
+          find ./flutter/android -name "AndroidManifest.xml" -type f -exec sed -i "s/$OLD_PACKAGE\.DEBUG_BOOT_COMPLETED/$NEW_PACKAGE.DEBUG_BOOT_COMPLETED/g" {} \;
+          
+          # 4. 修改 strings.xml 中的应用名称
+          sed -i "s/<string name=\"app_name\">$OLD_APP_NAME<\/string>/<string name=\"app_name\">$NEW_APP_NAME<\/string>/g" ./flutter/android/app/src/main/res/values/strings.xml
+          sed -i "s/android:label=\"$OLD_APP_NAME\"/android:label=\"$NEW_APP_NAME\"/g" ./flutter/android/app/src/main/AndroidManifest.xml
+          
+          # 5. 先移动 Kotlin 文件到新的包目录结构（在修改文件内容之前）
+          OLD_DIR="./flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb"
+          NEW_DIR="./flutter/android/app/src/main/kotlin/$(echo $NEW_PACKAGE | tr '.' '/')"
+          
+          if [ -d "$OLD_DIR" ]; then
+            mkdir -p "$(dirname "$NEW_DIR")"
+            # 如果新目录已存在，先删除
+            if [ -d "$NEW_DIR" ]; then
+              rm -rf "$NEW_DIR"
+            fi
+            mv "$OLD_DIR" "$NEW_DIR"
+            echo "已移动 Kotlin 文件目录: $OLD_DIR -> $NEW_DIR"
+          fi
+          
+          # 6. 修改所有 Kotlin 文件中的包名（在移动目录之后）
+          find ./flutter/android/app/src/main/kotlin -name "*.kt" -type f -exec sed -i "s/package $OLD_PACKAGE/package $NEW_PACKAGE/g" {} \;
+          find ./flutter/android/app/src/main/kotlin -name "*.kt" -type f -exec sed -i "s/import $OLD_PACKAGE/import $NEW_PACKAGE/g" {} \;
+          
+          # 7. 修改 BootReceiver.kt 中的常量（使用新路径）
+          BOOT_RECEIVER_PATH="./flutter/android/app/src/main/kotlin/$(echo $NEW_PACKAGE | tr '.' '/')/BootReceiver.kt"
+          if [ -f "$BOOT_RECEIVER_PATH" ]; then
+            sed -i "s/const val DEBUG_BOOT_COMPLETED = \"$OLD_PACKAGE\.DEBUG_BOOT_COMPLETED\"/const val DEBUG_BOOT_COMPLETED = \"$NEW_PACKAGE.DEBUG_BOOT_COMPLETED\"/g" "$BOOT_RECEIVER_PATH"
+          fi
+          
+          # 8. 修改 ffi.kt 中的 import（如果存在）
+          if [ -f "./flutter/android/app/src/main/kotlin/ffi.kt" ]; then
+            sed -i "s/import $OLD_PACKAGE/import $NEW_PACKAGE/g" ./flutter/android/app/src/main/kotlin/ffi.kt
+          fi
+          
+          # 9. 修改 BootReceiver.kt 中的 Toast 消息
+          if [ -f "$BOOT_RECEIVER_PATH" ]; then
+            sed -i "s/Toast.makeText(context, \"$OLD_APP_NAME is Open\"/Toast.makeText(context, \"$NEW_APP_NAME is Open\"/g" "$BOOT_RECEIVER_PATH"
+          fi
+          
+          echo "标识符修改完成！"
+          echo "新的包目录: $NEW_DIR"
+
+      - name: Build rustdesk
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          # Increase Gradle JVM memory for CI builds
+          sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
+          # temporary use debug sign config
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
+          cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+          
+          # build flutter
+          pushd flutter
+          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ../rustdesk-${{ env.VERSION }}-aarch64-custom.apk
+          popd
+          
+          mkdir -p signed-apk
+          mv rustdesk-${{ env.VERSION }}-aarch64-custom.apk signed-apk/
+
+      - name: Upload Artifacts
+        if: ${{ env.UPLOAD_ARTIFACT != 'false' }}
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-${{ env.VERSION }}-aarch64-custom.apk
+          path: signed-apk/rustdesk-${{ env.VERSION }}-aarch64-custom.apk
+
+      - name: Display build info
+        run: |
+          echo "构建完成！"
+          FINAL_PACKAGE="${{ env.CUSTOM_PACKAGE_NAME }}"
+          FINAL_APP_NAME="${{ env.CUSTOM_APP_NAME }}"
+          if [ -z "$FINAL_PACKAGE" ]; then
+            FINAL_PACKAGE="com.remote.desktop.app"
+          fi
+          if [ -z "$FINAL_APP_NAME" ]; then
+            FINAL_APP_NAME="RemoteDesktop"
+          fi
+          echo "包名: $FINAL_PACKAGE"
+          echo "应用名称: $FINAL_APP_NAME"
+          echo "架构: aarch64"
+          echo "APK 文件: rustdesk-${{ env.VERSION }}-aarch64-custom.apk"
+          ls -lh signed-apk/
+
